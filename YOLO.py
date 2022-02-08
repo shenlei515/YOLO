@@ -62,12 +62,12 @@ from yad2k.model.keras_yolo import yolo_head, yolo_boxes_to_corners, preprocess_
 
 
 def yolo_filter_boxes(box_confidence, boxes, box_class_probs, threshold = .6):
-    box_class_conf=tf.multiply(box_confidence,box_class_probs)
+    box_class_conf=tf.multiply(box_confidence,box_class_probs)#计算各类别的置信概率
     box_class_max=K.max(box_class_conf,axis=-1)
-    box_class_max_index=K.argmax(box_class_conf,axis=-1)
-    box_class_filted=tf.boolean_mask(box_class_max,box_class_max>=0.6)
-    box_class_filted_index=tf.boolean_mask(box_class_max_index,box_class_max>=0.6)
-    box_class_filted_box=tf.boolean_mask(boxes,box_class_max>=0.6)
+    box_class_max_index=K.argmax(box_class_conf,axis=-1)#选出最大的置信概率和对应的类别
+    box_class_filted=tf.boolean_mask(box_class_max,box_class_max>=threshold)
+    box_class_filted_index=tf.boolean_mask(box_class_max_index,box_class_max>=threshold)
+    box_class_filted_box=tf.boolean_mask(boxes,box_class_max>=threshold)#筛选出不属于要检测的类别
     return box_class_filted,box_class_filted_box,box_class_filted_index
 
 def iou(box1,box2):
@@ -85,17 +85,20 @@ def yolo_non_max_suppression(scores,boxes,classes,max_boxes=10,iou_threshold=0.5
     box_list_class=[]
     box_list_boxes=[]
     i=0
+    #筛选box直到选出的数量达到最大数量，或者待选box列表为空
     while(i<max_boxes and len(boxes)!=0):
-        main_box=K.argmax(scores)
+        main_box=K.argmax(scores)#挑选出分数最高的box先确定下来
         box_list_score.append(scores[main_box])
         box_list_class.append(classes[main_box])
         box_list_boxes.append(boxes[main_box])
         # for t in range(i+1,len(boxes)):不能在for...in...里面用变化的范围
         t=0
+        #遍历待选box列表中的其他box
         while(t<=len(boxes)-1):#而while可以更新
             if(t==main_box):
                 t=t+1
                 continue
+            #删除与当前主box的IOU太大的box，避免重复检测同一个物体
             if (iou(boxes[t],boxes[main_box])>iou_threshold):
                 scores=np.delete(scores,t,axis=0)
                 classes=np.delete(classes,t,axis=0)
@@ -105,6 +108,7 @@ def yolo_non_max_suppression(scores,boxes,classes,max_boxes=10,iou_threshold=0.5
                     main_box=main_box-1
             t=t+1
         t=0
+        #最后在待选框列表删除该主box(一开始就在待选box列表删掉会不会使得后面的过程简单一些？)
         scores=np.delete(scores,main_box,axis=0)
         classes=np.delete(classes,main_box,axis=0)
         boxes=np.delete(boxes,main_box,axis=0)
@@ -115,20 +119,21 @@ def yolo_non_max_suppression(scores,boxes,classes,max_boxes=10,iou_threshold=0.5
 def yolo_eval(yolo_outputs, image_shape = (720., 1280.), max_boxes=10, score_threshold=.6, iou_threshold=.5):
     box_confidence, box_xy, box_wh, box_class_probs = yolo_outputs
     boxes = yolo_boxes_to_corners(box_xy,box_wh)
-    scores,boxes,classes=yolo_filter_boxes(box_confidence,boxes,box_class_probs,score_threshold)
-
+    scores,boxes,classes=yolo_filter_boxes(box_confidence,boxes,box_class_probs,score_threshold)#初步过滤anchor box，筛选掉最大概率(有物体概率*最大类别条件概率)<threshold的
+    
+    
     boxes=scale_boxes(boxes,image_shape)
-    scores,boxes,classes=yolo_non_max_suppression(scores,boxes,classes,max_boxes,iou_threshold)
+    scores,boxes,classes=yolo_non_max_suppression(scores,boxes,classes,max_boxes,iou_threshold)#进一步筛选，筛选掉重复检测同一物体的box，IOU>iou_threshould
 
     return scores,boxes,classes
 
 
-class_names = read_classes("model_data/coco_classes.txt")
-anchors = read_anchors("model_data/yolo_anchors.txt")
+class_names = read_classes("model_data/coco_classes.txt")#读出目标类别列表
+anchors = read_anchors("model_data/yolo_anchors.txt")#读出YOLO预设的待选的anchor box的坐标信息列表
 image_shape = (720., 1280.)
-image, image_data = preprocess_image("images/" + "test.jpg", model_image_size = (608, 608))
+image, image_data = preprocess_image("images/" + "test.jpg", model_image_size = (608, 608))#预处理图片数据，包括/255转变成灰度图，以及加batch维度
 yolo_model = load_model("model_data/yolo.h5")
-outputs = tf.convert_to_tensor(yolo_model.predict(image_data))
+outputs = tf.convert_to_tensor(yolo_model.predict(image_data))#推理过程，得到yolo网络的输出，即每个grid cell对应的anchor box的(x，y，w，h(长宽横纵坐标)，c(该anchor box检测到物体的置信度)，Pr（检测到物体下，该物体属于各类别的条件概率向量）)
 yolo_outputs = yolo_head(outputs, anchors, len(class_names))
 out_scores, out_boxes, out_classes = yolo_eval(yolo_outputs, image_shape)
 
